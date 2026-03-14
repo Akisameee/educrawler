@@ -13,3 +13,5 @@ wheels/
 .env
 *.yaml
 *.yml
+# Database
+data/

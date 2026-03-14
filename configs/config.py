@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     # 从 YAML 文件加载的配置
     _config_file: Optional[ConfigFile] = None
-    _config_path: Path = Path("config/config2.yaml")
+    _config_path: Path = Path("configs/config2.yaml")
 
     def load_config(self) -> None:
         """从 YAML 文件加载配置"""
