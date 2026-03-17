@@ -37,8 +37,8 @@ class Link(BaseLink):
         return other.__lt__(self)
     
     def __str__(self) -> str:
-        anchor_text = self.anchor_text if len(self.anchor_text) < 20 else f"{self.anchor_text[:20]}..."
-        return f"{self.url}: {anchor_text}"
+        anchor_text = self.anchor_text if len(self.anchor_text) < 20 else f"{self.anchor_text[:40]}..."
+        return f"{self.url} {anchor_text}"
     
     def __repr__(self):
         return super().__repr__()

@@ -51,6 +51,8 @@ async def get_links(page: Page, domain: str, visited: Dict[str, Link]) -> Dict[s
         url = link_data['url'].rstrip('/')
         if not check_domain(url, target_domain):
             continue
+        if url in visited:
+            continue
         if len(link_data['anchor_text']) < 8 and any(text in link_data['anchor_text'] for text in IGNORE_TEXTS):
             continue
         if url not in filtered_links:

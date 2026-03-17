@@ -10,10 +10,8 @@ from src.base import Link, ExtractedData
 from src.browser import close_browser
 from src.nodes import discoverer_node, healer_node, judge_node, planner_node
 
-
+MAX_PAGES = 30
 # ============ 状态定义 ============
-
-
 class CrawlerState(TypedDict):
     """爬虫状态"""
 
@@ -28,8 +26,6 @@ class CrawlerState(TypedDict):
 
 
 # ============ 路由函数 ============
-
-
 def route_after_planner(state: CrawlerState) -> str:
     """Planner后的路由"""
     pending_urls = state.get("pending_urls", [])
@@ -63,8 +59,7 @@ def route_after_judge(state: CrawlerState) -> str:
         return "healer"
 
     # 限制最大访问页面数
-    MAX_PAGES = 10
-    if len(visited_urls) >= MAX_PAGES:
+    if MAX_PAGES and len(visited_urls) >= MAX_PAGES:
         print(f"[路由] 已达到最大页面限制 ({MAX_PAGES} 页)，结束爬取")
         return END
 
@@ -85,8 +80,6 @@ def route_after_healer(state: CrawlerState) -> str:
 
 
 # ============ 构建图 ============
-
-
 def build_crawler_graph():
     """构建爬虫状态机图"""
     graph = StateGraph(CrawlerState)
@@ -110,20 +103,8 @@ def build_crawler_graph():
 
 
 # ============ 运行入口 ============
-
-
 async def run_crawler(domain_url: str, max_steps: int = 50):
-    """
-    运行爬虫
-
-    Args:
-        task: 任务描述
-        max_steps: 最大执行步数
-    """
-    # 构建图
     graph = build_crawler_graph()
-
-    # 初始状态
     initial_state: CrawlerState = {
         "messages": [],
         "target_domain": domain_url,
@@ -139,7 +120,6 @@ async def run_crawler(domain_url: str, max_steps: int = 50):
     print(f"开始爬取: {domain_url}...")
     print("=" * 60)
 
-    # 运行图
     try:
         result = await graph.ainvoke(
             initial_state,
@@ -171,5 +151,4 @@ async def run_crawler(domain_url: str, max_steps: int = 50):
         print("\n资源已清理")
 
 
-# 导出
 __all__ = ["build_crawler_graph", "run_crawler", "CrawlerState"]
