@@ -15,13 +15,13 @@ async def main():
     print("可用模型:", settings.list_models())
 
     # 示例任务：爬取教育领域相关信息
-    task = "帮我爬取https://leetcode.cn/上的用户诉求"
+    domain_url = "https://leetcode.cn/"
 
-    await run_crawler(task, max_steps=30)
+    await run_crawler(domain_url, max_steps=30)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n用户中断，退出程序")
+        print("用户中断，退出程序")

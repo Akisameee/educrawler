@@ -1,6 +1,7 @@
 import json
 from functools import cache
 from pathlib import Path
+from urllib.parse import urlparse
 
 @cache
 def load_prompt(skill_name: str) -> str:
@@ -24,3 +25,9 @@ def parse_json_response(content: str) -> dict:
         return json.loads(content.strip())
     except Exception:
         return {}
+    
+
+def check_domain(url: str, target_domain: str) -> bool:
+    """检查URL是否属于目标域名"""
+    parsed_url = urlparse(url)
+    return parsed_url.netloc == target_domain or parsed_url.netloc.endswith(f".{target_domain}")

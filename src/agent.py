@@ -6,7 +6,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
-from src.base import Link
+from src.base import Link, ExtractedData
 from src.browser import close_browser
 from src.nodes import discoverer_node, healer_node, judge_node, planner_node
 
@@ -22,7 +22,7 @@ class CrawlerState(TypedDict):
     current_url: Optional[Link]
     pending_urls: List[Link]
     visited_urls: Dict[str, Link]
-    extracted_data: List[dict]
+    extracted_data: List[ExtractedData]
     error: str | None
     retry_count: int
 
@@ -65,7 +65,7 @@ def route_after_judge(state: CrawlerState) -> str:
     # 限制最大访问页面数
     MAX_PAGES = 10
     if len(visited_urls) >= MAX_PAGES:
-        print(f"\n[路由] 已达到最大页面限制 ({MAX_PAGES} 页)，结束爬取")
+        print(f"[路由] 已达到最大页面限制 ({MAX_PAGES} 页)，结束爬取")
         return END
 
     if not pending_urls:
@@ -112,7 +112,7 @@ def build_crawler_graph():
 # ============ 运行入口 ============
 
 
-async def run_crawler(task: str, max_steps: int = 50):
+async def run_crawler(domain_url: str, max_steps: int = 50):
     """
     运行爬虫
 
@@ -125,8 +125,8 @@ async def run_crawler(task: str, max_steps: int = 50):
 
     # 初始状态
     initial_state: CrawlerState = {
-        "messages": [HumanMessage(content=task)],
-        "target_domain": "",
+        "messages": [],
+        "target_domain": domain_url,
         "current_url": None,
         "pending_urls": [],
         "visited_urls": {},
@@ -136,7 +136,7 @@ async def run_crawler(task: str, max_steps: int = 50):
     }
 
     print(f"\n{'=' * 60}")
-    print(f"开始任务: {task[:100]}...")
+    print(f"开始爬取: {domain_url}...")
     print("=" * 60)
 
     # 运行图
@@ -156,11 +156,8 @@ async def run_crawler(task: str, max_steps: int = 50):
             print("\n提取的数据:")
             for i, data in enumerate(result["extracted_data"], 1):
                 print(f"\n--- 数据 {i} ---")
-                for key, value in data.items():
-                    if isinstance(value, list):
-                        print(f"{key}: {', '.join(value)}")
-                    else:
-                        print(f"{key}: {value}")
+                for field_name, value in data.model_dump().items():
+                    print(f"{field_name}: {value}")
 
     except Exception as e:
         print(f"\n执行出错: {e}")

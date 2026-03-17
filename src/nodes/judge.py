@@ -1,38 +1,18 @@
 """Judge 节点 - 评估页面是否包含目标数据"""
 from playwright.async_api import Page
 from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.output_parsers import PydanticOutputParser
 
-from src.base import Link
+from src.base import Link, ExtractedData, JudgeResult
 from src.nodes.planner import get_llm
 from src.browser import get_page
 from src.storage import get_storage
 from src.utils import load_prompt, parse_json_response
 
+parser = PydanticOutputParser(pydantic_object=JudgeResult)
 
 async def get_text(page: Page) -> str:
     """获取页面文本"""
-    # await page.add_script_tag(path="./plugins/Readability.js")
-    # # 2. 在浏览器环境中执行解析逻辑
-    # article_data = await page.evaluate("""
-    #     () => {
-    #         // 检查库是否加载成功
-    #         if (typeof Readability === 'undefined') return null;
-            
-    #         // 使用 cloneNode 保持原始页面不被破坏
-    #         const documentClone = document.cloneNode(true);
-    #         const reader = new Readability(documentClone);
-    #         const article = reader.parse();
-            
-    #         return article; 
-    #         // article 包含: title, content (HTML), textContent (纯文本), excerpt (摘要), siteName
-    #     }
-    # """)
-    
-    # if article_data:
-    #     print(f"标题: {article_data['title']}")
-    #     # 返回清洗后的纯文本，并限制长度防止 Token 溢出
-    #     return article_data['textContent'].strip()[:10000]
-    # return ""
     page_content = await page.evaluate(
         """
         () => {
@@ -59,14 +39,14 @@ async def judge_node(state: dict) -> dict:
         page = await get_page()
         page_content = await get_text(page)
         if current_link.url != page.url:
-            await page.goto(current_link.url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(current_link.url, wait_until="networkidle", timeout=30000)
     except Exception as e:
         print(f"[Judge] 获取页面内容失败: {e}")
         return {"error": str(e)}
 
-    print(f"\n[Judge] 评估页面: {current_link}")
+    print(f"[Judge] 评估页面: {current_link}")
 
-    system_prompt = load_prompt("judge")
+    system_prompt = load_prompt("judge") + parser.get_format_instructions()
     query = f"""
 ## 当前页面
 URL: {current_link.url}
@@ -82,19 +62,18 @@ URL: {current_link.url}
         HumanMessage(content=query)
     ])
 
-    result = parse_json_response(response.content)
-
-    if result.get("has_value"):
-        datas = result.get("datas", [])
+    response = parser.parse(response.content)
+    if response.has_value:
+        datas = response.datas
         storage = get_storage()
         for data in datas:
-            data["source_url"] = current_link.url
+            data.url = current_link.url
             extracted_data.append(data)
-            print(f"[Judge] 提取到数据: {data.get('topic_title', 'N/A')}, {data.get('appeal', 'N/A')}")
-            storage.save_extracted_data(current_link.url, data)
-        current_link.judge_result = result.get("judge_result", "有价值页面")
+            print(f"[Judge] 提取到数据: {data.topic_title or 'N/A'}, {data.appeal or 'N/A'}")
+            storage.save_extracted_data(current_link.url, data.model_dump_json())
+        current_link.judge_result = response.judge_result or "有价值页面"
     else:
-        current_link.judge_result = result.get("judge_result", "无价值页面")
+        current_link.judge_result = response.judge_result or "无价值页面"
         print(f"[Judge] 页面无价值: {current_link.judge_result}")
     visited_urls[current_link.url] = current_link
 

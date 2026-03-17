@@ -7,7 +7,7 @@ async def healer_node(state: dict) -> dict:
     retry_count = state.get("retry_count", 0)
     pending_urls = list(state.get("pending_urls", []))
 
-    print(f"\n[Healer] 检测到错误: {error}")
+    print(f"[Healer] 检测到错误: {error}")
     print(f"[Healer] 重试次数: {retry_count}")
 
     # 如果重试次数过多，跳过当前URL
