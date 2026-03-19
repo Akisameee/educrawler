@@ -1,138 +1,115 @@
 """Discoverer 节点 - 导航到页面，使用 LLM 智能发现新链接"""
-from urllib.parse import urlparse, ParseResult
-from pydantic import BaseModel, Field
-import heapq
+import asyncio
 from playwright.async_api import Page
+from playwright.async_api import Error as PlaywrightError
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.output_parsers import PydanticOutputParser
+from langgraph.types import Send
 from typing import TYPE_CHECKING, List, Tuple, Dict, Literal
-if TYPE_CHECKING:
-    from src.agent import CrawlerState
 
+from configs.config import get_llm
+from src.state import CrawlerState
 from src.base import Link, RecommandedLink, DiscoveryResult
-from src.browser import get_page
-from src.nodes.planner import get_llm
-from src.utils import load_prompt, parse_json_response, check_domain
+from src.browser import get_new_page, get_links, get_text
+from src.utils import load_prompt
 
-parser = PydanticOutputParser(pydantic_object=DiscoveryResult)
-
-IGNORE_TEXTS = [
-    "登录", "login",
-    "注册", "register",
-    "退出", "exit",
-    "下载", "download",
-    "帮助", "help",
-    "反馈", "feedback"
-]
-async def get_links(page: Page, domain: str, visited: Dict[str, Link]) -> Dict[str, Link]:
-    """从页面提取链接信息，并仅保留属于指定 domain 的链接"""
-    raw_links: List[Dict[str, str]] = await page.evaluate(
-        """
-        () => {
-            return Array.from(document.querySelectorAll('a[href]')).map(a => {
-                // 优先取 innerText，如果太乱或没有，可以取 title 属性
-                let text = a.innerText || a.title || "";
-                
-                // 清洗文本：去除换行、多余空格
-                const cleanText = text.replace(/\\s+/g, ' ').trim();
-                
-                return {
-                    url: a.href,
-                    anchor_text: cleanText || "[无文本]"
-                };
-            });
-        }
-        """
-    )
-    
-    filtered_links: Dict[str, Link] = {}
-    target_domain = urlparse(domain).netloc if "://" in domain else domain
-    for link_data in raw_links:
-        url = link_data['url'].rstrip('/')
-        if not check_domain(url, target_domain):
-            continue
-        if url in visited:
-            continue
-        if len(link_data['anchor_text']) < 8 and any(text in link_data['anchor_text'] for text in IGNORE_TEXTS):
-            continue
-        if url not in filtered_links:
-            filtered_links[url] = Link(**link_data)
-    return filtered_links
-
-
-async def discoverer_node(state: "CrawlerState") -> "CrawlerState":
-    """Discoverer节点 - 导航到页面，使用 LLM 智能发现新链接"""
-    target_domain = state.get("target_domain", "")
-    current_link = state.get("current_url", None)
-    pending_links: List[Link] = state.get("pending_urls", [])
-    pending_url_dict: Dict[str, Link] = {link.url: link for link in pending_links}
-    visited_links: Dict[str, Link] = state.get("visited_urls", dict())
-
-    if not pending_links: return {}
-
-    page = await get_page()
-    while not current_link:
-        current_link = heapq.heappop(pending_links)
-        print(f"[Discoverer] 弹出待访问队列: {current_link}")
-        await page.goto(current_link.url, wait_until="networkidle", timeout=30000)
-        print(f"[Discoverer] 页面加载完成")
-        if page.url in visited_links:
-            print(f"[Discoverer] 已被重定向至访问过的页面: {page.url}")
-            current_link = None
-
-    print(f"[Discoverer] 导航到: {current_link}")
-
-    # 从页面提取链接信息（URL + 锚点文本）
-    links = await get_links(page, target_domain, visited_links)
-    print(f"[Discoverer] 从页面提取到 {len(links)} 个链接")
-    for link in links.values():
-        if link.url in visited_links:
-            link.judge_result = visited_links[link.url].judge_result
-
-    system_prompt = load_prompt("discoverer") + parser.get_format_instructions()
-
-    links_json = [link.model_dump_json(exclude_none=True) for link in list(links.values())[:100]]
-
-    query = f"""
+QUERY = \
+"""
 ## 当前页面
-URL: {current_link.url}
+URL: {url}
 
 ## 页面链接列表
-{links_json}
+{links}
 
-请分析以上链接并输出JSON格式的结果。"""
+请分析以上链接并输出JSON格式的结果。
+"""
 
-    try:
-        llm = get_llm()
-        response = await llm.ainvoke([
+class DiscovererNode:
+    """Discoverer 节点模型"""
+    def __init__(self):
+        self.parser = PydanticOutputParser(pydantic_object=DiscoveryResult)
+        self.llm = get_llm()
+
+    async def __call__(self, state: "CrawlerState") -> "CrawlerState":
+        """Discoverer节点 - 导航到页面，使用 LLM 智能发现新链接"""
+        target_domain = state.get("target_domain", "")
+        current_link = state.get("current_link", None)
+        visited_links: Dict[str, Link] = state.get("visited_links", dict())
+
+        max_retries = 3
+        async with get_new_page() as page:
+            for attempt in range(3):
+                try:
+                    await page.goto(current_link.url, wait_until="networkidle", timeout=30000)
+                    break
+                except PlaywrightError as e:
+                    if "ERR_NETWORK_CHANGED" in str(e) and attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 2
+                        print(f"网络抖动，{wait_time}s 后进行第 {attempt + 2} 次重试...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        print(f"加载失败: {current_link.url}, 错误: {e}")
+                        return {"error": str(e)}
+            
+            page_url = page.url.rstrip('/')
+            if page_url == current_link.url:
+                print(f"[Discoverer] 导航到: {current_link}")
+            else:
+                print(f"[Discoverer] 页面被重定向: {current_link.url} -> {page_url}")
+                current_link.redirected_url = page_url
+                if page_url in visited_links:
+                    print(f"[Discoverer] 页面已访问: {page_url}")
+                    current_link.judge_result = visited_links[page_url].judge_result
+                    visited_links[current_link.url] = current_link
+                    return {
+                        "current_link": None,
+                        "current_page_links": {},
+                        "current_page_content": "",
+                    }
+                
+            # 从页面提取链接信息（URL + 锚点文本）
+            current_page_links = await get_links(page, target_domain, visited_links)
+            print(f"[Discoverer] 从页面提取到 {len(current_page_links)} 个链接")
+            for link in current_page_links.values():
+                if link.url in visited_links:
+                    link.judge_result = visited_links[link.url].judge_result
+            current_page_content = await get_text(page)
+
+        system_prompt = load_prompt("discoverer") + self.parser.get_format_instructions()
+        links_json = [link.model_dump_json(exclude_none=True) for link in list(current_page_links.values())[:100]]
+        query = QUERY.format(url=current_link.url, links="\n".join(links_json))
+
+        response = await self.llm.ainvoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content=query)
         ])
-        response = parser.parse(response.content)
+        response = self.parser.parse(response.content)
         print(f"[Discoverer] 页面类型: {response.current_page_type}")
         print(f"[Discoverer] 策略建议: {response.strategic_advice}")
 
-        # 添加推荐的链接到大根堆
+        recommended_links = []
         for link in response.recommended_links:
-            if link.url and link.url not in visited_links and link.url not in pending_url_dict:
-                anchor_text = links[link.url].anchor_text if link.url in links else ""
+            if link.url and link.url not in visited_links:
+                anchor_text = current_page_links[link.url].anchor_text if link.url in current_page_links else ""
                 pending_link = Link(
                     url = link.url,
                     anchor_text = anchor_text,
                     score = link.score
                 )
-                heapq.heappush(pending_links, pending_link)
+                recommended_links.append(pending_link)
                 print(f"[Discoverer] 加入推荐链接: {pending_link}")
 
-        print(f"[Discoverer] 待访问队列: {len(pending_links)} 个")
-
-    except Exception as e:
-        print(f"[Discoverer] LLM 调用失败: {e}")
-
-    return {
-        "current_url": current_link,
-        "pending_urls": pending_links,
-        "visited_urls": visited_links,
-        "error": None,
-        "retry_count": 0,
-    }
+        return {
+            "current_link": current_link,
+            "current_page_links": recommended_links,
+            "current_page_content": current_page_content,
+        }
+    
+    @staticmethod
+    def route_after(state: "CrawlerState") -> Send:
+        """Discoverer后的路由"""
+        error = state.get("error")
+        if error:
+            return "healer"
+        return "judge"

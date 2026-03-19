@@ -1,77 +1,21 @@
 """LangGraph Agent - 基于 SPEC 架构的爬虫智能体"""
-
+import operator
 from typing import Annotated, Dict, List, TypedDict, Optional
 
 from langchain_core.messages import HumanMessage
-from langgraph.graph import END, StateGraph
+from langgraph.graph import START, END, StateGraph
 from langgraph.graph.message import add_messages
 
+from src.state import CrawlerState, LinksUpdate
 from src.base import Link, ExtractedData
 from src.browser import close_browser
-from src.nodes import discoverer_node, healer_node, judge_node, planner_node
+from src.nodes import DiscovererNode, healer_node, JudgeNode, PlannerNode
 
 MAX_PAGES = 30
-# ============ 状态定义 ============
-class CrawlerState(TypedDict):
-    """爬虫状态"""
-
-    messages: Annotated[List, add_messages]
-    target_domain: str
-    current_url: Optional[Link]
-    pending_urls: List[Link]
-    visited_urls: Dict[str, Link]
-    extracted_data: List[ExtractedData]
-    error: str | None
-    retry_count: int
-
-
 # ============ 路由函数 ============
-def route_after_planner(state: CrawlerState) -> str:
-    """Planner后的路由"""
-    pending_urls = state.get("pending_urls", [])
-    if not pending_urls:
-        return END
-    return "discoverer"
-
-
-def route_after_discoverer(state: CrawlerState) -> str:
-    """Discoverer后的路由"""
-    error = state.get("error")
-    current_url = state.get("current_url", "")
-    pending_urls = state.get("pending_urls", [])
-
-    if error:
-        return "healer"
-
-    if not current_url and not pending_urls:
-        return END
-
-    return "judge"
-
-
-def route_after_judge(state: CrawlerState) -> str:
-    """Judge后的路由"""
-    error = state.get("error")
-    pending_urls = state.get("pending_urls", [])
-    visited_urls = state.get("visited_urls", [])
-
-    if error:
-        return "healer"
-
-    # 限制最大访问页面数
-    if MAX_PAGES and len(visited_urls) >= MAX_PAGES:
-        print(f"[路由] 已达到最大页面限制 ({MAX_PAGES} 页)，结束爬取")
-        return END
-
-    if not pending_urls:
-        return END
-
-    return "discoverer"
-
-
 def route_after_healer(state: CrawlerState) -> str:
     """Healer后的路由"""
-    pending_urls = state.get("pending_urls", [])
+    pending_urls = state.get("pending_links", [])
 
     if not pending_urls:
         return END
@@ -85,20 +29,20 @@ def build_crawler_graph():
     graph = StateGraph(CrawlerState)
 
     # 添加节点
-    graph.add_node("planner", planner_node)
-    graph.add_node("discoverer", discoverer_node)
-    graph.add_node("judge", judge_node)
+    graph.add_node("planner", PlannerNode())
+    graph.add_node("discoverer", DiscovererNode())
+    graph.add_node("judge", JudgeNode())
     graph.add_node("healer", healer_node)
 
     # 设置入口点
-    graph.set_entry_point("planner")
+    graph.add_edge(START, "planner")
 
     # 添加条件边
-    graph.add_conditional_edges("planner", route_after_planner)
-    graph.add_conditional_edges("discoverer", route_after_discoverer)
-    graph.add_conditional_edges("judge", route_after_judge)
-    graph.add_conditional_edges("healer", route_after_healer)
-
+    graph.add_conditional_edges("planner", PlannerNode.route_after, ["discoverer", END])
+    graph.add_conditional_edges("discoverer", DiscovererNode.route_after, ["judge", "healer"])
+    graph.add_conditional_edges("judge", JudgeNode.route_after, ["planner", "healer"])
+    graph.add_conditional_edges("healer", route_after_healer, ["discoverer", "judge"])
+    
     return graph.compile()
 
 
@@ -106,12 +50,16 @@ def build_crawler_graph():
 async def run_crawler(domain_url: str, max_steps: int = 50):
     graph = build_crawler_graph()
     initial_state: CrawlerState = {
-        "messages": [],
         "target_domain": domain_url,
-        "current_url": None,
-        "pending_urls": [],
-        "visited_urls": {},
-        "extracted_data": [],
+        "current_link": None,
+        "current_page_links": {},
+        "current_page_content": "",
+
+        "working_links": [],
+        "pending_links": LinksUpdate(reduce="replace", data=[Link(url=domain_url)]),
+        "visited_links": {},
+
+        "extracted_datas": [],
         "error": None,
         "retry_count": 0,
     }
@@ -121,20 +69,17 @@ async def run_crawler(domain_url: str, max_steps: int = 50):
     print("=" * 60)
 
     try:
-        result = await graph.ainvoke(
-            initial_state,
-            {"recursion_limit": max_steps},
-        )
+        result = await graph.ainvoke(initial_state)
 
         # 打印结果
         print("\n" + "=" * 60)
         print("爬取完成!")
         print(f"已访问 URL 数量: {len(result.get('visited_urls', []))}")
-        print(f"提取数据数量: {len(result.get('extracted_data', []))}")
+        print(f"提取数据数量: {len(result.get('extracted_datas', []))}")
 
-        if result.get("extracted_data"):
+        if result.get("extracted_datas"):
             print("\n提取的数据:")
-            for i, data in enumerate(result["extracted_data"], 1):
+            for i, data in enumerate(result["extracted_datas"], 1):
                 print(f"\n--- 数据 {i} ---")
                 for field_name, value in data.model_dump().items():
                     print(f"{field_name}: {value}")
@@ -151,4 +96,4 @@ async def run_crawler(domain_url: str, max_steps: int = 50):
         print("\n资源已清理")
 
 
-__all__ = ["build_crawler_graph", "run_crawler", "CrawlerState"]
+__all__ = ["build_crawler_graph", "run_crawler"]

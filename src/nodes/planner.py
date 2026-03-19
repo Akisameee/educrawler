@@ -1,79 +1,47 @@
 """Planner 节点 - 识别目标域名，生成初始URL种子列表"""
 
-import re
-from urllib.parse import urlparse
+import heapq
 from typing import List, Tuple
 
-from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
+from langgraph.types import Send
+from langgraph.graph import END
 
-from configs.config import settings
+from configs.config import get_llm
+from src.state import CrawlerState, LinksUpdate
 from src.base import Link
-from src.utils import load_prompt, parse_json_response
 
 
-def get_llm() -> ChatOpenAI:
-    """获取LLM实例"""
-    return ChatOpenAI(
-        api_key=settings.api_key,
-        base_url=settings.base_url,
-        model=settings.model_name,
-        temperature=settings.temperature,
-    )
+class PlannerNode:
+    """Planner 节点模型"""
+    def __init__(self, max_parallel: int = 5):
+        self.llm = get_llm()
+        self.max_parallel = max_parallel
 
+    async def __call__(self, state: CrawlerState) -> CrawlerState:
+        """Planner节点 - 识别目标域名，生成初始URL种子列表"""
+        pending_links = state.get("pending_links", [])
+        print(f"[Planner] 待处理链接数量: {len(pending_links)}")
 
-async def planner_node(state: dict) -> dict:
-    """Planner节点 - 识别目标域名，生成初始URL种子列表"""
-#     llm = get_llm()
+        working_links = []
+        for _ in range(min(len(pending_links), self.max_parallel)):
+            working_link = heapq.heappop(pending_links)
+            working_links.append(working_link)
+        
+        return {
+            "pending_links": LinksUpdate(reduce="replace", data=pending_links),
+            "working_links": working_links,
+        }
 
-#     # 从消息中提取任务描述
-#     task = ""
-#     for msg in reversed(state.get("messages", [])):
-#         if hasattr(msg, "content") and msg.content:
-#             task = msg.content
-#             break
-
-#     print(f"[Planner] 分析任务: {task[:100]}...")
-
-#     # 加载技能说明书
-#     skill_doc = load_prompt("planner")
-
-#     # 构建prompt
-#     prompt = f"""{skill_doc}
-
-# ## 当前任务
-# {task}
-
-# 请根据上述任务，输出JSON格式的规划结果。"""
-
-#     response = await llm.ainvoke([HumanMessage(content=prompt)])
-#     result = parse_json_response(response.content)
-
-#     domain = result.get("domain", "")
-#     seed_urls = result.get("seed_urls", [])
-
-#     # 如果解析失败，尝试从任务中提取URL
-#     if not seed_urls:
-#         urls = re.findall(r"https?://[^\s]+", task)
-#         domain = urlparse(urls[0]).netloc if urls else ""
-#         seed_urls = urls
-
-#     pending_urls: List[Link] = []
-#     for url in seed_urls:
-#         pending_urls.append(Link(url=url))
-    
-#     print(f"[Planner] 目标域名: {domain}")
-#     print(f"[Planner] 种子 URL: {pending_urls}")
-
-#     return {
-#         "target_domain": domain,
-#         "pending_urls": pending_urls,
-#         "current_url": None,
-#     }
-    target_domain = state.get("target_domain", None)
-    pending_urls = [Link(url=target_domain)] if target_domain else []
-    
-    return {
-        "pending_urls": pending_urls,
-        "current_url": None,
-    }
+    @staticmethod
+    def route_after(state: CrawlerState) -> str:
+        """Planner后的路由"""
+        working_links = state.get("working_links", [])
+        if not working_links: return END
+        return [
+            Send("discoverer", {
+                "target_domain": state["target_domain"],
+                "current_link": working_link,
+                "current_page_links": [],
+                "current_page_content": "",
+            }) for working_link in working_links
+        ]

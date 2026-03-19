@@ -6,6 +6,7 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
+from langchain_openai import ChatOpenAI
 
 
 class ModelConfig(BaseModel):
@@ -97,3 +98,12 @@ class Settings(BaseSettings):
 
 # 全局配置实例
 settings = Settings()
+
+def get_llm() -> ChatOpenAI:
+    """获取LLM实例"""
+    return ChatOpenAI(
+        api_key=settings.api_key,
+        base_url=settings.base_url,
+        model=settings.model_name,
+        temperature=settings.temperature,
+    )

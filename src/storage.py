@@ -48,7 +48,7 @@ class SQLiteStorage:
 
         # 提取的数据表
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS extracted_data (
+            CREATE TABLE IF NOT EXISTS extracted_datas (
                 url TEXT PRIMARY KEY,
                 data TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -243,8 +243,8 @@ class SQLiteStorage:
         conn.close()
 
         return {
-            "visited_urls": visited_count,
-            "pending_urls": pending_count,
+            "visited_links": visited_count,
+            "pending_links": pending_count,
             "extracted_data": data_count,
         }
 

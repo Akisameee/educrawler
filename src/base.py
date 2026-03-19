@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Literal
 
 class BaseLink(BaseModel):
     url: str = Field(description="链接地址")
+    redirected_url: Optional[str] = Field(None, description="重定向后的链接地址")
     @model_validator(mode="after")
     def _model_validate(self) -> "BaseLink":
         self.url = self.url.rstrip('/')
