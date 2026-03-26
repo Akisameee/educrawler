@@ -2,11 +2,11 @@
 import operator
 from typing import Annotated, Dict, List, TypedDict, Optional
 
-from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import START, END, StateGraph
 from langgraph.graph.message import add_messages
 
-from src.state import CrawlerState, LinksUpdate
+from src.state import CrawlerState, ExplorerInput, ExplorerOutput, ExplorerState, LinksUpdate
 from src.base import Link, ExtractedData
 from src.browser import close_browser
 from src.nodes import DiscovererNode, healer_node, JudgeNode, PlannerNode
@@ -26,22 +26,20 @@ def route_after_healer(state: CrawlerState) -> str:
 # ============ 构建图 ============
 def build_crawler_graph():
     """构建爬虫状态机图"""
+    explorer_graph = StateGraph(ExplorerState, input_schema=ExplorerInput, output_schema=ExplorerOutput)
+    explorer_graph.add_node("discoverer", DiscovererNode())
+    explorer_graph.add_node("judge", JudgeNode())
+    explorer_graph.add_node("healer", healer_node)
+
+    explorer_graph.add_edge(START, "discoverer")
+    explorer_graph = explorer_graph.compile()
+
     graph = StateGraph(CrawlerState)
+    graph.add_node("planner", PlannerNode(2))
+    graph.add_node("explorer", explorer_graph)
 
-    # 添加节点
-    graph.add_node("planner", PlannerNode())
-    graph.add_node("discoverer", DiscovererNode())
-    graph.add_node("judge", JudgeNode())
-    graph.add_node("healer", healer_node)
-
-    # 设置入口点
     graph.add_edge(START, "planner")
-
-    # 添加条件边
-    graph.add_conditional_edges("planner", PlannerNode.route_after, ["discoverer", END])
-    graph.add_conditional_edges("discoverer", DiscovererNode.route_after, ["judge", "healer"])
-    graph.add_conditional_edges("judge", JudgeNode.route_after, ["planner", "healer"])
-    graph.add_conditional_edges("healer", route_after_healer, ["discoverer", "judge"])
+    graph.add_conditional_edges("planner", PlannerNode.route_after, ["explorer", END])
     
     return graph.compile()
 
@@ -51,38 +49,39 @@ async def run_crawler(domain_url: str, max_steps: int = 50):
     graph = build_crawler_graph()
     initial_state: CrawlerState = {
         "target_domain": domain_url,
-        "current_link": None,
-        "current_page_links": {},
-        "current_page_content": "",
-
         "working_links": [],
-        "pending_links": LinksUpdate(reduce="replace", data=[Link(url=domain_url)]),
+        "pending_links": LinksUpdate(reduce="replace", data=[
+            Link(url=domain_url),
+            Link(url="https://leetcode.cn/studyplan/top-100-liked")
+        ]),
         "visited_links": {},
-
         "extracted_datas": [],
-        "error": None,
-        "retry_count": 0,
     }
+    config = RunnableConfig(
+        max_concurrency=10
+    )
 
     print(f"\n{'=' * 60}")
     print(f"开始爬取: {domain_url}...")
     print("=" * 60)
 
     try:
-        result = await graph.ainvoke(initial_state)
+        result = await graph.ainvoke(initial_state, config)
+        # async for chunk in graph.astream(initial_state, stream_mode="debug", subgraphs=True):
+        #     print(f"更新内容: {chunk}, payload_keys: {chunk[1]['payload'].keys()}")
 
-        # 打印结果
+        # # 打印结果
         print("\n" + "=" * 60)
         print("爬取完成!")
-        print(f"已访问 URL 数量: {len(result.get('visited_urls', []))}")
+        print(f"已访问 URL 数量: {len(result.get('visited_links', []))}")
         print(f"提取数据数量: {len(result.get('extracted_datas', []))}")
 
-        if result.get("extracted_datas"):
-            print("\n提取的数据:")
-            for i, data in enumerate(result["extracted_datas"], 1):
-                print(f"\n--- 数据 {i} ---")
-                for field_name, value in data.model_dump().items():
-                    print(f"{field_name}: {value}")
+        # if result.get("extracted_datas"):
+        #     print("\n提取的数据:")
+        #     for i, data in enumerate(result["extracted_datas"], 1):
+        #         print(f"\n--- 数据 {i} ---")
+        #         for field_name, value in data.model_dump().items():
+        #             print(f"{field_name}: {value}")
 
     except Exception as e:
         print(f"\n执行出错: {e}")

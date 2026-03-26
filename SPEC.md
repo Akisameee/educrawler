@@ -13,7 +13,7 @@ educrawler/
 ├── src/
 │   ├── agent.py          # LangGraph 状态机构建
 │   ├── browser.py        # Playwright 浏览器操作
-│   ├── storage.py        # SQLite3 存储模块
+│   ├── storage.py        # JSONL 存储模块（按 domain 分文件）
 │   ├── utils.py          # 通用工具函数
 │   ├── nodes/            # 节点实现
 │   │   ├── __init__.py
@@ -29,8 +29,12 @@ educrawler/
 ├── configs/
 │   ├── config.py         # 配置管理
 │   └── config2.yaml      # 模型配置文件
-├── data/                 # SQLite 数据库存储目录
-│   └── crawler.db
+├── data/                 # JSONL 数据存储目录（按 domain 分文件夹）
+│   └── {domain}/         # 每个 domain 一个文件夹
+│       ├── visited_urls.jsonl
+│       ├── pending_urls.jsonl
+│       ├── extracted_data.jsonl
+│       └── state.json
 └── main.py               # 入口文件
 ```
 
@@ -54,7 +58,7 @@ educrawler/
 3. **Judge 节点** ([nodes/judge.py](src/nodes/judge.py))
    - 评估页面是否包含目标数据
    - 提取结构化数据
-   - 保存到 SQLite 数据库
+   - 保存到 JSONL 文件
    - 技能说明：[prompts/judge.md](src/prompts/judge.md)
 
 4. **Healer 节点** ([nodes/healer.py](src/nodes/healer.py))
@@ -64,11 +68,21 @@ educrawler/
 
 ## 4. 存储模块
 
-使用 **SQLite3**（Python 自带）实现：
-- URL 去重（visited_urls 表）
-- 待访问队列（pending_urls 表）
-- 数据存储（extracted_data 表）
-- 爬虫状态（crawler_state 表）
+使用 **JSONL** 格式存储，按 target domain 分文件夹存储：
+
+```
+data/{domain}/
+├── visited_urls.jsonl    # 已访问 URL（每行：{"url": "...", "visited_at": "..."}）
+├── pending_urls.jsonl    # 待访问队列（每行：{"url": "...", "priority": 0, "created_at": "..."}）
+├── extracted_data.jsonl  # 提取的数据（每行：{"url": "...", "data": {...}, "created_at": "..."}）
+└── state.json           # 爬虫状态
+```
+
+功能：
+- URL 去重
+- 待访问队列管理
+- 数据存储
+- 爬虫状态持久化
 
 详见：[storage.py](src/storage.py)
 

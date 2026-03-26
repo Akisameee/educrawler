@@ -40,7 +40,7 @@ def reduce_visited_links(
 ) -> Dict[str, Link]:
     if not update_links: return current_links
 
-    if isinstance(update_links, list): update_links = LinksUpdate(reduce="merge", data=update_links)
+    if isinstance(update_links, dict): update_links = LinksUpdate(reduce="merge", data=update_links)
     if update_links.reduce == "merge":
         current_links.update(update_links.data)
         return current_links
@@ -50,19 +50,28 @@ def reduce_visited_links(
 
 MAX_PAGES = 30
 # ============ 状态定义 ============
-class CrawlerState(TypedDict):
+class CrawlerState(BaseModel):
     """爬虫状态"""
     target_domain: str
-
-    current_link: Optional[Link]
-    current_page_links: Dict[str, Link]
-    current_page_content: str
-    discovered_links: List[Link]
 
     working_links: List[Link]
     pending_links: Annotated[List[Link], reduce_pending_links]
     visited_links: Annotated[Dict[str, Link], reduce_visited_links]
 
     extracted_datas: Annotated[List[ExtractedData], operator.add]
+
+class ExplorerInput(BaseModel):
+    target_domain: str
+    current_link: Optional[Link]
+    visited_links: Annotated[Dict[str, Link], reduce_visited_links]
+
+class ExplorerOutput(BaseModel):
+    pending_links: Annotated[List[Link], reduce_pending_links]
+    extracted_datas: Annotated[List[ExtractedData], operator.add]
+
+class ExplorerContext(BaseModel):
     error: str | None
     retry_count: int
+
+class ExplorerState(ExplorerInput, ExplorerOutput):
+    current_page_content: str

@@ -1,9 +1,9 @@
 """Planner 节点 - 识别目标域名，生成初始URL种子列表"""
 
 import heapq
-from typing import List, Tuple
+from typing import List, Tuple, Literal
 
-from langgraph.types import Send
+from langgraph.types import Send, Command
 from langgraph.graph import END
 
 from configs.config import get_llm
@@ -19,7 +19,7 @@ class PlannerNode:
 
     async def __call__(self, state: CrawlerState) -> CrawlerState:
         """Planner节点 - 识别目标域名，生成初始URL种子列表"""
-        pending_links = state.get("pending_links", [])
+        pending_links = state.pending_links.copy()
         print(f"[Planner] 待处理链接数量: {len(pending_links)}")
 
         working_links = []
@@ -35,13 +35,12 @@ class PlannerNode:
     @staticmethod
     def route_after(state: CrawlerState) -> str:
         """Planner后的路由"""
-        working_links = state.get("working_links", [])
-        if not working_links: return END
+        if not state.working_links: return END
         return [
-            Send("discoverer", {
-                "target_domain": state["target_domain"],
+            # Send("discoverer", {
+            Send("explorer", {
+                "target_domain": state.target_domain,
                 "current_link": working_link,
-                "current_page_links": [],
-                "current_page_content": "",
-            }) for working_link in working_links
+                "visited_links": state.visited_links,
+            }) for working_link in state.working_links
         ]

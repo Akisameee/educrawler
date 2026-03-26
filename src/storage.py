@@ -1,101 +1,119 @@
-"""SQLite3 存储模块 - 用于持久化存储和去重"""
+"""JSONL 存储模块 - 用于持久化存储和去重"""
 
 import json
-import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from langchain_core.tools import tool
 
 
-class SQLiteStorage:
-    """SQLite3 存储类"""
+class JSONLStorage:
+    """JSONL 存储类，按 domain 分文件存储"""
 
-    _instance: Optional["SQLiteStorage"] = None
-    _db_path: str = "data/crawler.db"
+    _instance: Optional["JSONLStorage"] = None
+    _domain: Optional[str] = None
+    _data_dir: Path = Path("data")
 
-    def __new__(cls):
+    def __new__(cls, domain: Optional[str] = None):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._init_db()
+        if domain:
+            cls._domain = cls._extract_domain(domain)
+            cls._instance._ensure_dirs()
         return cls._instance
 
-    def _init_db(self):
-        """初始化数据库表"""
-        # 确保数据目录存在
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+    @classmethod
+    def _extract_domain(cls, url_or_domain: str) -> str:
+        """从 URL 或域名提取干净的域名"""
+        if "://" in url_or_domain:
+            parsed = urlparse(url_or_domain)
+            return parsed.netloc
+        return url_or_domain
 
-        conn = sqlite3.connect(self._db_path)
-        cursor = conn.cursor()
+    @property
+    def _storage_dir(self) -> Path:
+        """获取当前 domain 的存储目录"""
+        if not self._domain:
+            raise ValueError("Domain 未设置，请先调用 set_domain() 或在初始化时传入")
+        return self._data_dir / self._domain
 
-        # 已访问URL表
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS visited_urls (
-                url TEXT PRIMARY KEY,
-                visited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+    def _ensure_dirs(self):
+        """确保存储目录存在"""
+        self._storage_dir.mkdir(parents=True, exist_ok=True)
 
-        # 待访问URL表
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS pending_urls (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                url TEXT UNIQUE,
-                priority INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+    def set_domain(self, domain: str):
+        """设置当前 domain"""
+        self._domain = self._extract_domain(domain)
+        self._ensure_dirs()
 
-        # 提取的数据表
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS extracted_datas (
-                url TEXT PRIMARY KEY,
-                data TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+    # ============ 文件路径 ============
 
-        # 爬虫状态表
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS crawler_state (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                state TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+    def _visited_file(self) -> Path:
+        return self._storage_dir / "visited_urls.jsonl"
 
-        conn.commit()
-        conn.close()
+    def _pending_file(self) -> Path:
+        return self._storage_dir / "pending_urls.jsonl"
 
-    def _get_conn(self) -> sqlite3.Connection:
-        """获取数据库连接"""
-        return sqlite3.connect(self._db_path)
+    def _extracted_file(self) -> Path:
+        return self._storage_dir / "extracted_data.jsonl"
+
+    def _state_file(self) -> Path:
+        return self._storage_dir / "state.json"
+
+    # ============ JSONL 辅助方法 ============
+
+    def _read_jsonl(self, file_path: Path) -> list[dict]:
+        """读取 JSONL 文件"""
+        if not file_path.exists():
+            return []
+        records = []
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+        return records
+
+    def _append_jsonl(self, file_path: Path, record: dict):
+        """追加一条记录到 JSONL 文件"""
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def _write_jsonl(self, file_path: Path, records: list[dict]):
+        """覆盖写入 JSONL 文件"""
+        with open(file_path, "w", encoding="utf-8") as f:
+            for record in records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     # ============ URL 去重 ============
 
     def is_url_visited(self, url: str) -> bool:
         """检查URL是否已访问"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM visited_urls WHERE url = ?", (url,))
-        result = cursor.fetchone()
-        conn.close()
-        return result is not None
+        visited = self._read_jsonl(self._visited_file())
+        return any(v.get("url") == url for v in visited)
 
     def mark_url_visited(self, url: str) -> bool:
         """标记URL为已访问，返回是否为新标记"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        try:
-            cursor.execute("INSERT INTO visited_urls (url) VALUES (?)", (url,))
-            conn.commit()
-            return True
-        except sqlite3.IntegrityError:
+        if self.is_url_visited(url):
             return False
-        finally:
-            conn.close()
+        record = {
+            "url": url,
+            "visited_at": datetime.now().isoformat(),
+        }
+        self._append_jsonl(self._visited_file(), record)
+        # 从待访问队列中移除
+        self._remove_from_pending(url)
+        return True
 
     # ============ 待访问队列 ============
+
+    def _remove_from_pending(self, url: str):
+        """从待访问队列中移除 URL"""
+        pending = self._read_jsonl(self._pending_file())
+        pending = [p for p in pending if p.get("url") != url]
+        self._write_jsonl(self._pending_file(), pending)
 
     def add_pending_url(self, url: str, priority: int = 0) -> bool:
         """添加URL到待访问队列"""
@@ -103,172 +121,127 @@ class SQLiteStorage:
         if self.is_url_visited(url):
             return False
 
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                "INSERT INTO pending_urls (url, priority) VALUES (?, ?)",
-                (url, priority),
-            )
-            conn.commit()
-            return True
-        except sqlite3.IntegrityError:
+        # 检查是否已在队列中
+        pending = self._read_jsonl(self._pending_file())
+        if any(p.get("url") == url for p in pending):
             return False
-        finally:
-            conn.close()
+
+        record = {
+            "url": url,
+            "priority": priority,
+            "created_at": datetime.now().isoformat(),
+        }
+        self._append_jsonl(self._pending_file(), record)
+        return True
 
     def get_pending_urls(self, limit: int = 10) -> list[str]:
         """获取待访问URL列表（按优先级排序）"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM pending_urls WHERE url IN (SELECT url FROM visited_urls)"
-        )
-        cursor.execute(
-            """
-            SELECT url FROM pending_urls
-            ORDER BY priority DESC, created_at ASC
-            LIMIT ?
-        """,
-            (limit,),
-        )
-        urls = [row[0] for row in cursor.fetchall()]
-        # 删除已获取的URL
-        if urls:
-            placeholders = ",".join("?" * len(urls))
-            cursor.execute(
-                f"DELETE FROM pending_urls WHERE url IN ({placeholders})", urls
-            )
-        conn.commit()
-        conn.close()
+        pending = self._read_jsonl(self._pending_file())
+        # 过滤已访问的
+        pending = [p for p in pending if not self.is_url_visited(p.get("url"))]
+        # 按优先级降序，创建时间升序排序
+        pending.sort(key=lambda x: (-x.get("priority", 0), x.get("created_at", "")))
+        # 取前 limit 个
+        urls = [p.get("url") for p in pending[:limit]]
+        # 从队列中移除已获取的 URL
+        remaining = [p for p in pending if p.get("url") not in urls]
+        self._write_jsonl(self._pending_file(), remaining)
         return urls
 
     def get_pending_count(self) -> int:
         """获取待访问URL数量"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM pending_urls")
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count
+        pending = self._read_jsonl(self._pending_file())
+        # 过滤已访问的
+        pending = [p for p in pending if not self.is_url_visited(p.get("url"))]
+        return len(pending)
 
     # ============ 数据存储 ============
 
     def save_extracted_data(self, url: str, data: dict) -> bool:
         """保存提取的数据"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                "INSERT OR REPLACE INTO extracted_data (url, data) VALUES (?, ?)",
-                (url, json.dumps(data, ensure_ascii=False)),
-            )
-            conn.commit()
-            return True
-        except Exception:
-            return False
-        finally:
-            conn.close()
+        records = self._read_jsonl(self._extracted_file())
+        # 移除同 URL 的旧数据
+        records = [r for r in records if r.get("url") != url]
+        record = {
+            "url": url,
+            "data": data,
+            "created_at": datetime.now().isoformat(),
+        }
+        records.append(record)
+        self._write_jsonl(self._extracted_file(), records)
+        return True
 
     def get_extracted_data(self, url: str) -> Optional[dict]:
         """获取已保存的数据"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT data FROM extracted_data WHERE url = ?", (url,))
-        result = cursor.fetchone()
-        conn.close()
-        if result:
-            return json.loads(result[0])
+        records = self._read_jsonl(self._extracted_file())
+        for record in records:
+            if record.get("url") == url:
+                return record.get("data")
         return None
 
     def list_extracted_data(self, limit: int = 100) -> list[dict]:
         """列出所有保存的数据"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT url, data FROM extracted_data ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        )
+        records = self._read_jsonl(self._extracted_file())
+        # 按创建时间降序
+        records.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         results = []
-        for url, data_str in cursor.fetchall():
-            results.append({"url": url, "data": json.loads(data_str)})
-        conn.close()
+        for record in records[:limit]:
+            results.append({"url": record.get("url"), "data": record.get("data")})
         return results
 
     # ============ 爬虫状态 ============
 
     def save_state(self, state: dict) -> bool:
         """保存爬虫状态"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                "INSERT OR REPLACE INTO crawler_state (id, state) VALUES (1, ?)",
-                (json.dumps(state, ensure_ascii=False),),
-            )
-            conn.commit()
-            return True
-        except Exception:
-            return False
-        finally:
-            conn.close()
+        state_file = self._state_file()
+        with open(state_file, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        return True
 
     def load_state(self) -> Optional[dict]:
         """加载爬虫状态"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT state FROM crawler_state WHERE id = 1")
-        result = cursor.fetchone()
-        conn.close()
-        if result:
-            return json.loads(result[0])
-        return None
+        state_file = self._state_file()
+        if not state_file.exists():
+            return None
+        with open(state_file, "r", encoding="utf-8") as f:
+            return json.load(f)
 
     # ============ 统计信息 ============
 
     def get_stats(self) -> dict:
         """获取统计信息"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
+        visited = self._read_jsonl(self._visited_file())
+        pending = self._read_jsonl(self._pending_file())
+        extracted = self._read_jsonl(self._extracted_file())
 
-        cursor.execute("SELECT COUNT(*) FROM visited_urls")
-        visited_count = cursor.fetchone()[0]
-
-        cursor.execute("SELECT COUNT(*) FROM pending_urls")
-        pending_count = cursor.fetchone()[0]
-
-        cursor.execute("SELECT COUNT(*) FROM extracted_data")
-        data_count = cursor.fetchone()[0]
-
-        conn.close()
+        # 过滤待访问中已访问的
+        pending = [p for p in pending if not self.is_url_visited(p.get("url"))]
 
         return {
-            "visited_links": visited_count,
-            "pending_links": pending_count,
-            "extracted_data": data_count,
+            "visited_links": len(visited),
+            "pending_links": len(pending),
+            "extracted_data": len(extracted),
         }
 
     def clear_all(self):
         """清空所有数据"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM visited_urls")
-        cursor.execute("DELETE FROM pending_urls")
-        cursor.execute("DELETE FROM extracted_data")
-        cursor.execute("DELETE FROM crawler_state")
-        conn.commit()
-        conn.close()
+        self._visited_file().unlink(missing_ok=True)
+        self._pending_file().unlink(missing_ok=True)
+        self._extracted_file().unlink(missing_ok=True)
+        self._state_file().unlink(missing_ok=True)
 
 
 # 全局存储实例
-_storage: Optional[SQLiteStorage] = None
+_storage: Optional[JSONLStorage] = None
 
 
-def get_storage() -> SQLiteStorage:
+def get_storage(domain: Optional[str] = None) -> JSONLStorage:
     """获取存储实例"""
     global _storage
     if _storage is None:
-        _storage = SQLiteStorage()
+        _storage = JSONLStorage(domain)
+    elif domain:
+        _storage.set_domain(domain)
     return _storage
 
 

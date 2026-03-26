@@ -1,8 +1,9 @@
 """配置管理模块 - 支持从 YAML 文件读取配置"""
-
+import time
 from pathlib import Path
 from typing import Optional
-
+import httpx
+import functools
 import yaml
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
@@ -99,11 +100,23 @@ class Settings(BaseSettings):
 # 全局配置实例
 settings = Settings()
 
+def send_wrapper(send_func):
+    @functools.wraps(send_func)
+    async def send(self, *args, **kwargs):
+        request = args[0]
+        print(f">>> [网络发送] {request.method} {request.url} - 时间: {time.time()}")
+        start_time = time.time()
+        response = await send_func(request, **kwargs)
+        duration = time.time() - start_time
+        print(f"<<< [网络接收] {request.url} - 状态: {response.status_code} - 耗时: {duration:.2f}s - 时间: {time.time()}")
+        return response
+    return send
+
 def get_llm() -> ChatOpenAI:
-    """获取LLM实例"""
-    return ChatOpenAI(
+    client = ChatOpenAI(
         api_key=settings.api_key,
         base_url=settings.base_url,
         model=settings.model_name,
         temperature=settings.temperature,
     )
+    return client

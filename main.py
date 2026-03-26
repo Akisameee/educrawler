@@ -5,6 +5,8 @@ Educrawler - AI Agent 爬虫
 """
 
 import asyncio
+from langchain_core.globals import set_debug
+# set_debug(True)
 
 from src.agent import run_crawler
 from configs.config import settings
